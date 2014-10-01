@@ -75,6 +75,12 @@ void swap(T& a, T& b){
 	b = c;
 }
 
+void printusage(){
+	printf("This is the help of this program!\n");
+	printf("You can use the configure.cfg to configure the program as well!\n");
+	printf("If you use cmd parameters, you have three option:\n");
+	printf("-b <int>: blockSize\n-p <int>: prefix sum array size\n-s <int>: scattering array size\n");
+}
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -481,7 +487,7 @@ void rec_GPU_POSBR(int* out, int* src, int size = scatterSize, int* multiBlock =
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
-int main()
+int main(int argc, char** argv)
 {
 	std::ifstream fin("config.cfg");
 	char buff[80];
@@ -491,7 +497,29 @@ int main()
 		is >> arraySize >> blockSize>>scatterSize;
 	}
 	fin.close();
-
+	if (argc > 1){
+		for (int i = 1; i < argc;){
+			if (!strcmp(argv[i], "-b")){
+				blockSize = atoi(argv[i + 1]);
+				i += 2;
+			}
+			else if (!strcmp(argv[i], "-p")){
+				arraySize = atoi(argv[i + 1]);
+				i += 2;
+			}
+			else if (!strcmp(argv[i], "-s")){
+				scatterSize = atoi(argv[i + 1]);
+				i += 2;
+			}
+			else{
+				printf("Unrecognized Parameter: %s\n", argv[i]);
+				printusage();
+				exit(-1);
+			}
+		}
+	}
+	std::ofstream fout("output.log", std::ios::app);
+	fout << blockSize << '\t' << arraySize << '\t' << scatterSize << '\t';
 	blkHost = (int)ceil((arraySize) / (float)blockSize);
     //const int arraySize = 6;
 	srand(time(NULL));
@@ -518,6 +546,7 @@ int main()
 	end = large_interger.QuadPart;
 	
 	printf("CPU_Version:\t %f ms:\n", 1000 * (end - start)/diff);
+	fout << 1000 * (end - start) / diff << '\t';
 	//printResult(c, arraySize+1);
 
 	/////////////////////////////////////////////
@@ -552,6 +581,7 @@ int main()
 	
 		if (verifyResult(c, host_res, arraySize + 1)) printf("GPU Second Step verifed OK!\n");
 		printf("GPU_Optimized_Version:\t %f ms:\n", 1000 * (end - start) / diff);
+		fout << 1000 * (end - start) / diff << '\t';
 		free(host_res);
 		cudaFree(res);
 		cudaFree(src);
@@ -582,6 +612,7 @@ int main()
 
 		if (verifyResult(c, host_res, arraySize + 1)) printf("GPU Second Step verifed OK!\n");
 		printf("GPU_Optimized_Bank_Conflicts_Resolved_Version:\t %f ms:\n", 1000 * (end - start) / diff);
+		fout << 1000 * (end - start) / diff << '\t';
 		free(host_res);
 		cudaFree(res);
 		cudaFree(src);
@@ -602,6 +633,8 @@ int main()
 	QueryPerformanceCounter(&large_interger);
 	end = large_interger.QuadPart;
 	printf("CPU_Scatter:\t %f ms:\n", 1000 * (end - start) / diff);
+
+	fout << 1000 * (end - start) / diff << '\t';
 	//printResult(Host_after_Scatter, sizeb);
 	//printf("scatterSize-sizeb=%d\n", scatterSize - sizeb);
 
@@ -632,6 +665,7 @@ int main()
 		GPU_MemHelper(Dev_after_Scatter, host_res, scatterSize, cudaMemcpyDeviceToHost);
 		if (verifyResult(Host_after_Scatter, host_res, sizeb)) printf("GPU Scatter verifed OK!\n");
 		printf("GPU_Scatter_Version:\t %f ms:\n", 1000 * (end - start) / diff);
+		fout << 1000 * (end - start) / diff << '\t';
 		free(host_res);
 		cudaFree(Dev_after_Scatter);
 		cudaFree(Dev_aux_Scatter);
@@ -663,6 +697,7 @@ int main()
 		GPU_MemHelper(Dev_after_Scatter, host_res, scatterSize, cudaMemcpyDeviceToHost);
 		if (verifyResult(Host_after_Scatter, host_res, sizeb)) printf("GPU Scatter Bank Conflicts Resolved verifed OK!\n");
 		printf("GPU Scatter Bank Conflicts Resolved Version:\t %f ms:\n", 1000 * (end - start) / diff);
+		fout << 1000 * (end - start) / diff << '\t';
 		free(host_res);
 		cudaFree(Dev_after_Scatter);
 		cudaFree(Dev_aux_Scatter);
@@ -688,13 +723,14 @@ int main()
 
 		if (verifyResult(Host_after_Scatter, host_res, sizeb)) printf("Thrust Scatter verifed OK!\n");
 		printf("Thrust::GPU_Scatter_Version:\t %f ms:\n", 1000 * (end - start) / diff);
+		fout << 1000 * (end - start) / diff << '\n';
 		free(host_res);
 		cudaDeviceReset();
 	}
 	/////////////////////////////////////////////
 	//////////////Naive calling//////////////////
 	/////////////////////////////////////////////
-	/*{
+	{
 		int *src, *res;
 		int *host_res = new int[arraySize + 1];
 		memset(host_res, 0, (arraySize + 1)*sizeof(int));
@@ -713,7 +749,7 @@ int main()
 		cudaFree(res);
 		cudaFree(src);
 		cudaDeviceReset();
-	}*/
+	}
 	
 
 
