@@ -131,21 +131,21 @@ __global__ void GPU_PrefixSumEx_Optimized(int* out, int* src,int* multiBlock,int
 	int blockid = (blockIdx.x*blockDim.x);
 	int thid = threadIdx.x;
 	int id = (blockIdx.x*blockDim.x) + threadIdx.x;
-	
+
 	if (id < dataSize){
 		cin[threadIdx.x] = src[id];
 		//cin[2 * threadIdx.x+1] = src[blockid + 2 * threadIdx.x+1];
 		__syncthreads();
 		//swap(in, out);
-		int lid = (1+thid)<<1;
-		int it=1;
-		
+		int lid = (1 + thid) << 1;
+		int it = 1;
+
 		for (it = 1; it < size; it *= 2){
-			
-			if (lid<= size+1){
-				
+
+			if (lid <= size + 1){
+
 				int rid = lid - it;
-				cin[lid-1] += cin[rid-1];
+				cin[lid - 1] += cin[rid - 1];
 			}
 			lid <<= 1;
 			__syncthreads();
@@ -155,35 +155,36 @@ __global__ void GPU_PrefixSumEx_Optimized(int* out, int* src,int* multiBlock,int
 		if (thid == 0){
 			multiBlock[blockIdx.x] = cin[size - 1];
 			//out[arraySize] = cin[it-1];
-			cin[size-1] = 0;
+			cin[size - 1] = 0;
 		}
 		int upbound = it;
 		while (it>1){
 			it >>= 1;
 			lid >>= 1;
 			if (lid <= upbound){
-				int rid = lid-it;
+				int rid = lid - it;
 				int tmp = cin[lid - 1];
 				cin[lid - 1] += cin[rid - 1];
-				cin[rid-1] = tmp;
+				cin[rid - 1] = tmp;
 			}
 			__syncthreads();
 		}
 
 		//swap(cin, cout);
 		out[id] = cin[threadIdx.x];
-		
+
 		__syncthreads();
-		/*for (int i = 1; i < blocks; i <<= 1)
-			if (blockIdx.x >= i) cout[threadIdx.x] += multiBlock[blockIdx.x - i];*/
 	}
 }
+
 __global__ void GPU_final(int* out, int*in, int size){
 	out[size] = out[size - 1] + in[size - 1];
 }
+
 __global__ void GPU_append(int *out, int *val, int loc,int pos=0){
 	out[loc] = val[pos];
 }
+
 __global__ void GPU_add(int *out, int *src, int size = arraySize){
 	if (blockIdx.x == 0) return;
 	//int blockid = (blockIdx.x*blockDim.x);
@@ -316,11 +317,163 @@ __global__ void GPU_scatter_cp(int* out, int* aux, int* in, int size = scatterSi
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
-__global__ void GPU_PrefixSumEx_Optimized_WithScatter_BankConflicts(int* out, const int* in, const int& size){
+__global__ void GPU_PrefixSumEx_Optimized_BankConflicts(int* out, int* src, int* multiBlock, int size, int dataSize = arraySize){
+	extern __shared__ int cache[];
+	int *cin = cache;
+	//int *cout = &cache[blockSize];
+	int blockid = (blockIdx.x*blockDim.x);
+	int thid = threadIdx.x;
+	int id = (blockIdx.x*blockDim.x) + threadIdx.x;
+	int offset = 1;
 
+	if (id < dataSize){
+
+		cin[CONFLICT_FREE_OFFSET(thid)] = src[id];
+
+		__syncthreads();
+		//swap(in, out);
+		int lid = (1 + thid) << 1;
+		int it = 1;
+
+		for (it = 1; it < size; it *= 2){
+
+			if (lid <= size + 1){
+
+				int rid = lid - it;
+				cin[CONFLICT_FREE_OFFSET(lid - 1)] += cin[CONFLICT_FREE_OFFSET(rid - 1)];
+			}
+			lid <<= 1;
+			__syncthreads();
+			//swap(cin, cout);
+		}
+		//it >>= 1;
+		if (thid == 0){
+			multiBlock[blockIdx.x] = cin[CONFLICT_FREE_OFFSET(size - 1)];
+			//out[arraySize] = cin[it-1];
+			cin[CONFLICT_FREE_OFFSET(size - 1)] = 0;
+		}
+		int upbound = it;
+		while (it>1){
+			it >>= 1;
+			lid >>= 1;
+			if (lid <= upbound){
+				int rid = lid - it;
+				int tmp = cin[CONFLICT_FREE_OFFSET(lid - 1)];
+				cin[CONFLICT_FREE_OFFSET(lid - 1)] += cin[CONFLICT_FREE_OFFSET(rid - 1)];
+				cin[CONFLICT_FREE_OFFSET(rid - 1)] = tmp;
+			}
+			__syncthreads();
+		}
+
+		//swap(cin, cout);
+		out[id] = cin[CONFLICT_FREE_OFFSET(thid)];
+
+		__syncthreads();
+
+	}
 }
 
+void rec_GPU_POBR(int* out, int* src, int size = arraySize, int* multiBlock = NULL){
+	int blocks = (size - 1) / blockSize + 1;
+	if (!multiBlock)
+		cudaMalloc((void**)&multiBlock, (blocks + 1)*sizeof(int));
+	GPU_PrefixSumEx_Optimized_BankConflicts << < blocks, blockSize, blockSize*sizeof(int) >> >(out, src, multiBlock, blockSize);
+	cudaThreadSynchronize();
+	if (blocks == 1){
+		GPU_append << <1, 1 >> >(out, multiBlock, size);
+		return;
+	}
+	else{
+		rec_GPU_POBR(multiBlock, multiBlock, blocks);
+		GPU_add << <blocks, blockSize >> >(out, multiBlock, size);
+		cudaThreadSynchronize();
+		GPU_append << <1, 1 >> >(out, multiBlock, size, blocks);
+	}
 
+	if (size == arraySize){
+		GPU_final << <1, 1 >> >(out, src, size);
+	}
+	cudaFree(multiBlock);
+}
+
+__global__ void GPU_PrefixSumEx_Optimized_WithScatter_BankConflicts(int* out, int* src, int* multiBlock, int size, int dataSize = arraySize){
+	extern __shared__ int cache[];
+	int *cin = cache;
+	//int *cout = &cache[blockSize];
+	int blockid = (blockIdx.x*blockDim.x);
+	int thid = threadIdx.x;
+	int id = (blockIdx.x*blockDim.x) + threadIdx.x;
+	int offset = 1;
+
+	if (id < dataSize){
+
+		cin[CONFLICT_FREE_OFFSET(thid)] = (src[id]!=0);
+
+		__syncthreads();
+		//swap(in, out);
+		int lid = (1 + thid) << 1;
+		int it = 1;
+
+		for (it = 1; it < size; it *= 2){
+
+			if (lid <= size + 1){
+
+				int rid = lid - it;
+				cin[CONFLICT_FREE_OFFSET(lid - 1)] += cin[CONFLICT_FREE_OFFSET(rid - 1)];
+			}
+			lid <<= 1;
+			__syncthreads();
+			//swap(cin, cout);
+		}
+		//it >>= 1;
+		if (thid == 0){
+			multiBlock[blockIdx.x] = cin[CONFLICT_FREE_OFFSET(size - 1)];
+			//out[arraySize] = cin[it-1];
+			cin[CONFLICT_FREE_OFFSET(size - 1)] = 0;
+		}
+		int upbound = it;
+		while (it>1){
+			it >>= 1;
+			lid >>= 1;
+			if (lid <= upbound){
+				int rid = lid - it;
+				int tmp = cin[CONFLICT_FREE_OFFSET(lid - 1)];
+				cin[CONFLICT_FREE_OFFSET(lid - 1)] += cin[CONFLICT_FREE_OFFSET(rid - 1)];
+				cin[CONFLICT_FREE_OFFSET(rid - 1)] = tmp;
+			}
+			__syncthreads();
+		}
+
+		//swap(cin, cout);
+		out[id] = cin[CONFLICT_FREE_OFFSET(thid)];
+
+		__syncthreads();
+
+	}
+}
+
+void rec_GPU_POSBR(int* out, int* src, int size = scatterSize, int* multiBlock = NULL){
+	int blocks = (size - 1) / blockSize + 1;
+	if (!multiBlock)
+		cudaMalloc((void**)&multiBlock, (blocks + 1)*sizeof(int));
+	GPU_PrefixSumEx_Optimized_WithScatter_BankConflicts << < blocks, blockSize, blockSize*sizeof(int) >> >(out, src, multiBlock, blockSize);
+	cudaThreadSynchronize();
+	if (blocks == 1){
+		GPU_append << <1, 1 >> >(out, multiBlock, size);
+		return;
+	}
+	else{
+		rec_GPU_POBR(multiBlock, multiBlock, blocks);
+		GPU_add << <blocks, blockSize >> >(out, multiBlock, size);
+		cudaThreadSynchronize();
+		GPU_append << <1, 1 >> >(out, multiBlock, size, blocks);
+	}
+
+	if (size == scatterSize){
+		GPU_final << <1, 1 >> >(out, src, size);
+	}
+	cudaFree(multiBlock);
+}
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -376,7 +529,7 @@ int main()
 	//////////////Optimized calling//////////////
 	/////////////////////////////////////////////
 	{
-
+		cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
 		int *src, *res;
 		int *host_res = new int[arraySize + 1];
 		memset(host_res, 0, (arraySize + 1)*sizeof(int));
@@ -390,7 +543,7 @@ int main()
 		QueryPerformanceCounter(&large_interger);
 		start = large_interger.QuadPart;
 
-		rec_GPU_PO(res, src);
+		rec_GPU_POBR(res, src);
 		
 
 		QueryPerformanceCounter(&large_interger);
@@ -405,6 +558,36 @@ int main()
 		cudaDeviceReset();
 	}
 	
+	{
+		cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
+		int *src, *res;
+		int *host_res = new int[arraySize + 1];
+		memset(host_res, 0, (arraySize + 1)*sizeof(int));
+		GPU_MemHelper(a, src, arraySize);
+
+
+
+		//GPU_MemHelper(host_res, buff, arraySize + 1);
+		GPU_MemHelper(host_res, res, arraySize + 1);
+
+		QueryPerformanceCounter(&large_interger);
+		start = large_interger.QuadPart;
+
+		rec_GPU_PO(res, src);
+
+
+		QueryPerformanceCounter(&large_interger);
+		end = large_interger.QuadPart;
+		GPU_MemHelper(res, host_res, arraySize + 1, cudaMemcpyDeviceToHost);
+
+		if (verifyResult(c, host_res, arraySize + 1)) printf("GPU Second Step verifed OK!\n");
+		printf("GPU_Optimized_Bank_Conflicts_Resolved_Version:\t %f ms:\n", 1000 * (end - start) / diff);
+		free(host_res);
+		cudaFree(res);
+		cudaFree(src);
+		cudaDeviceReset();
+	}
+
 	/////////////////////////////////////////////
 	//////////////CPU scatter calling////////////
 	/////////////////////////////////////////////
@@ -426,6 +609,7 @@ int main()
 	//////////////GPU scatter calling////////////
 	/////////////////////////////////////////////
 	{
+		cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
 		int* Dev_before_Scatter;
 		int* allzero = new int[scatterSize + 1];
 		memset(allzero, 0, (scatterSize + 1)*sizeof(int));
@@ -448,6 +632,37 @@ int main()
 		GPU_MemHelper(Dev_after_Scatter, host_res, scatterSize, cudaMemcpyDeviceToHost);
 		if (verifyResult(Host_after_Scatter, host_res, sizeb)) printf("GPU Scatter verifed OK!\n");
 		printf("GPU_Scatter_Version:\t %f ms:\n", 1000 * (end - start) / diff);
+		free(host_res);
+		cudaFree(Dev_after_Scatter);
+		cudaFree(Dev_aux_Scatter);
+		cudaFree(Dev_before_Scatter);
+		cudaDeviceReset();
+	}
+
+	{
+		cudaDeviceSetSharedMemConfig(cudaSharedMemBankSizeEightByte);
+		int* Dev_before_Scatter;
+		int* allzero = new int[scatterSize + 1];
+		memset(allzero, 0, (scatterSize + 1)*sizeof(int));
+		GPU_MemHelper(Host_before_Scatter, Dev_before_Scatter, scatterSize);
+		int* Dev_aux_Scatter;
+		GPU_MemHelper(allzero, Dev_aux_Scatter, scatterSize + 1);
+		int* Dev_after_Scatter;
+		GPU_MemHelper(allzero, Dev_after_Scatter, scatterSize + 1);
+
+		QueryPerformanceCounter(&large_interger);
+		start = large_interger.QuadPart;
+
+		rec_GPU_POSBR(Dev_aux_Scatter, Dev_before_Scatter);
+		GPU_scatter_cp << <(int)ceil((scatterSize) / (float)blockSize), blockSize >> >(Dev_after_Scatter, Dev_aux_Scatter, Dev_before_Scatter);
+
+		QueryPerformanceCounter(&large_interger);
+		end = large_interger.QuadPart;
+
+		int* host_res = new int[scatterSize];
+		GPU_MemHelper(Dev_after_Scatter, host_res, scatterSize, cudaMemcpyDeviceToHost);
+		if (verifyResult(Host_after_Scatter, host_res, sizeb)) printf("GPU Scatter Bank Conflicts Resolved verifed OK!\n");
+		printf("GPU Scatter Bank Conflicts Resolved Version:\t %f ms:\n", 1000 * (end - start) / diff);
 		free(host_res);
 		cudaFree(Dev_after_Scatter);
 		cudaFree(Dev_aux_Scatter);
@@ -479,7 +694,7 @@ int main()
 	/////////////////////////////////////////////
 	//////////////Naive calling//////////////////
 	/////////////////////////////////////////////
-	{
+	/*{
 		int *src, *res;
 		int *host_res = new int[arraySize + 1];
 		memset(host_res, 0, (arraySize + 1)*sizeof(int));
@@ -498,7 +713,7 @@ int main()
 		cudaFree(res);
 		cudaFree(src);
 		cudaDeviceReset();
-	}
+	}*/
 	
 
 
