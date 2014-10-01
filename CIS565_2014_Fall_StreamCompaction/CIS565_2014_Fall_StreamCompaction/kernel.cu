@@ -730,7 +730,7 @@ int main(int argc, char** argv)
 	/////////////////////////////////////////////
 	//////////////Naive calling//////////////////
 	/////////////////////////////////////////////
-	{
+	/*{
 		int *src, *res;
 		int *host_res = new int[arraySize + 1];
 		memset(host_res, 0, (arraySize + 1)*sizeof(int));
@@ -749,7 +749,7 @@ int main(int argc, char** argv)
 		cudaFree(res);
 		cudaFree(src);
 		cudaDeviceReset();
-	}
+	}*/
 	
 
 
